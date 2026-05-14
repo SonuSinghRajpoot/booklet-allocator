@@ -1,0 +1,14 @@
+{
+  "identifier": "default",
+  "description": "Default app capability",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:default",
+    "store:default"
+  ]
+}
