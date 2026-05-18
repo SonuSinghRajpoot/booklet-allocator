@@ -30,7 +30,6 @@ pub fn run() {
             cmd_append_audit_log,
             cmd_list_log_files,
             cmd_read_log_file,
-            cmd_verify_log_password,
             cmd_get_mac_address,
             cmd_run_log_cleanup,
             cmd_open_folder,

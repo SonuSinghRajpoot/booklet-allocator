@@ -242,6 +242,15 @@ export default function Main() {
             {darkMode ? "☀ Light" : "☾ Dark"}
           </button>
           <button
+            onClick={() => navigate("/logs")}
+            className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200
+                       border border-gray-200 dark:border-gray-600 rounded px-2.5 py-1
+                       bg-transparent dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700"
+            title="Audit Logs (Ctrl+Shift+L)"
+          >
+            📋 Logs
+          </button>
+          <button
             onClick={() => navigate("/settings")}
             className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200
                        border border-gray-200 dark:border-gray-600 rounded px-2.5 py-1

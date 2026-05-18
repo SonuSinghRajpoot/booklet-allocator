@@ -3,7 +3,7 @@ use crate::excel::{
     generate_sample_file, validate_input_file, write_output_files, OutputRow, ValidationResult,
 };
 use crate::logging::{
-    append_log_entry, get_mac_address, list_log_files, read_log_file, verify_log_password,
+    append_log_entry, get_mac_address, list_log_files, read_log_file,
     AuditLogEntry, CycleLogEntry, EvaluatorLogEntry, SettingsSnapshot,
 };
 use serde::{Deserialize, Serialize};
@@ -129,15 +129,6 @@ pub async fn cmd_read_log_file(
         return Err(format!("Log file '{}' not found", filename));
     }
     read_log_file(&path)
-}
-
-// ---------------------------------------------------------------------------
-// Password verification
-// ---------------------------------------------------------------------------
-
-#[tauri::command]
-pub async fn cmd_verify_log_password(password: String) -> Result<bool, String> {
-    verify_log_password(&password)
 }
 
 // ---------------------------------------------------------------------------

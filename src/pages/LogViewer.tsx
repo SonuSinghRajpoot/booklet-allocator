@@ -24,20 +24,33 @@ interface LogEntry {
 
 export default function LogViewer() {
   const navigate = useNavigate();
+
+  // All available log files
   const [logFiles, setLogFiles] = useState<string[]>([]);
+
+  // Single-file mode
   const [selectedFile, setSelectedFile] = useState("");
+
+  // Multi-file / date-range mode
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [dateRangeMode, setDateRangeMode] = useState(false);
+
+  // Loaded entries + metadata
   const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [loadedFrom, setLoadedFrom] = useState<string[]>([]); // which files were loaded
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expandedSettings, setExpandedSettings] = useState<Set<number>>(new Set());
 
-  // Filters
+  // In-memory filters (applied to already-loaded entries)
   const [filterMac, setFilterMac] = useState("");
   const [filterCycle, setFilterCycle] = useState("");
   const [filterFilename, setFilterFilename] = useState("");
-  const [filterDateFrom, setFilterDateFrom] = useState("");
-  const [filterDateTo, setFilterDateTo] = useState("");
 
+  // -----------------------------------------------------------------------
+  // Load log file list on mount
+  // -----------------------------------------------------------------------
   useEffect(() => {
     invoke<string[]>("cmd_list_log_files")
       .then((files) => {
@@ -49,19 +62,87 @@ export default function LogViewer() {
       .catch((e) => setError(String(e)));
   }, []);
 
+  // -----------------------------------------------------------------------
+  // Single-file load: triggers when file selector changes (and not in range mode)
+  // -----------------------------------------------------------------------
   useEffect(() => {
-    if (!selectedFile) return;
+    if (dateRangeMode || !selectedFile) return;
+    loadSingleFile(selectedFile);
+  }, [selectedFile, dateRangeMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // -----------------------------------------------------------------------
+  // Helpers
+  // -----------------------------------------------------------------------
+  const loadSingleFile = async (filename: string) => {
     setLoading(true);
     setError("");
-    invoke<LogEntry[]>("cmd_read_log_file", { filename: selectedFile })
-      .then((data) => {
-        setEntries(data as LogEntry[]);
-      })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
-  }, [selectedFile]);
+    setEntries([]);
+    setLoadedFrom([]);
+    try {
+      const data = await invoke<LogEntry[]>("cmd_read_log_file", { filename });
+      setEntries(data as LogEntry[]);
+      setLoadedFrom([filename]);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // Unique MACs in current file
+  // Load all files whose date falls within [from, to]
+  const loadDateRange = async () => {
+    if (!filterDateFrom && !filterDateTo) return;
+    setLoading(true);
+    setError("");
+    setEntries([]);
+    setLoadedFrom([]);
+
+    const matched = logFiles.filter((f) => {
+      // filename format: YYYY-MM-DD.log.enc
+      const datePart = f.replace(".log.enc", "");
+      if (filterDateFrom && datePart < filterDateFrom) return false;
+      if (filterDateTo && datePart > filterDateTo) return false;
+      return true;
+    });
+
+    if (matched.length === 0) {
+      setError("No log files found for the selected date range.");
+      setLoading(false);
+      return;
+    }
+
+    const combined: LogEntry[] = [];
+    const loaded: string[] = [];
+    for (const filename of matched) {
+      try {
+        const data = await invoke<LogEntry[]>("cmd_read_log_file", { filename });
+        combined.push(...(data as LogEntry[]));
+        loaded.push(filename);
+      } catch {
+        // Mark file as tampered/unreadable but continue
+        combined.push({ error: `Could not read ${filename}` });
+      }
+    }
+
+    setEntries(combined);
+    setLoadedFrom(loaded);
+    setDateRangeMode(true);
+    setLoading(false);
+  };
+
+  const resetToSingleFile = () => {
+    setDateRangeMode(false);
+    setFilterDateFrom("");
+    setFilterDateTo("");
+    setFilterMac("");
+    setFilterCycle("");
+    setFilterFilename("");
+    if (selectedFile) loadSingleFile(selectedFile);
+  };
+
+  // -----------------------------------------------------------------------
+  // Derived data
+  // -----------------------------------------------------------------------
   const uniqueMacs = useMemo(() => {
     const macs = new Set<string>();
     for (const e of entries) {
@@ -70,42 +151,28 @@ export default function LogViewer() {
     return Array.from(macs).sort();
   }, [entries]);
 
-  // Filtered entries
   const filtered = useMemo(() => {
     return entries.filter((e) => {
-      if (e.error) return true; // always show tampered entries
-
+      if (e.error) return true;
       if (filterMac && e.mac_address !== filterMac) return false;
-
-      if (filterFilename && !e.input_filename?.toLowerCase().includes(filterFilename.toLowerCase()))
+      if (
+        filterFilename &&
+        !e.input_filename?.toLowerCase().includes(filterFilename.toLowerCase())
+      )
         return false;
-
       if (filterCycle) {
         const hasCycle = e.cycles?.some((c) =>
           c.cycle_name.toLowerCase().includes(filterCycle.toLowerCase())
         );
         if (!hasCycle) return false;
       }
-
-      if (filterDateFrom && e.datetime) {
-        if (e.datetime.slice(0, 10) < filterDateFrom) return false;
-      }
-      if (filterDateTo && e.datetime) {
-        if (e.datetime.slice(0, 10) > filterDateTo) return false;
-      }
-
       return true;
     });
-  }, [entries, filterMac, filterFilename, filterCycle, filterDateFrom, filterDateTo]);
+  }, [entries, filterMac, filterFilename, filterCycle]);
 
-  const toggleSettings = (idx: number) => {
-    setExpandedSettings((s) => {
-      const n = new Set(s);
-      n.has(idx) ? n.delete(idx) : n.add(idx);
-      return n;
-    });
-  };
-
+  // -----------------------------------------------------------------------
+  // Export
+  // -----------------------------------------------------------------------
   const exportVisible = async (format: "txt" | "csv") => {
     const ext = format === "csv" ? "csv" : "txt";
     const path = await save({
@@ -146,7 +213,8 @@ export default function LogViewer() {
     } else {
       for (const e of filtered) {
         if (e.error) {
-          content += "⚠ This log entry could not be decrypted. It may have been tampered with.\n\n";
+          content +=
+            "⚠ This log entry could not be decrypted. It may have been tampered with.\n\n";
           continue;
         }
         content += `Timestamp : ${e.datetime ?? ""}\n`;
@@ -157,8 +225,10 @@ export default function LogViewer() {
         for (const c of e.cycles ?? []) {
           content += `\n  ${c.cycle_name} (pool: ${c.pool_size})\n`;
           for (const ev of c.evaluators) {
-            const inputStr = ev.input_pct != null ? ` [input: ${ev.input_pct}%]` : " [free]";
-            const shareStr = ev.share_pct != null ? ` (${ev.share_pct}%)` : "";
+            const inputStr =
+              ev.input_pct != null ? ` [input: ${ev.input_pct}%]` : " [free]";
+            const shareStr =
+              ev.share_pct != null ? ` (${ev.share_pct}%)` : "";
             content += `    ${ev.id}${inputStr}: ${ev.booklets} booklets${shareStr}\n`;
           }
         }
@@ -169,6 +239,17 @@ export default function LogViewer() {
     await invoke("cmd_write_text_file", { path, content });
   };
 
+  const toggleSettings = (idx: number) => {
+    setExpandedSettings((s) => {
+      const n = new Set(s);
+      n.has(idx) ? n.delete(idx) : n.add(idx);
+      return n;
+    });
+  };
+
+  // -----------------------------------------------------------------------
+  // Render
+  // -----------------------------------------------------------------------
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
       {/* Header */}
@@ -202,111 +283,198 @@ export default function LogViewer() {
       </header>
 
       <div className="max-w-5xl mx-auto px-6 py-6 space-y-6">
-        {/* File selector + filters */}
-        <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200
-                        dark:border-gray-700 p-4 space-y-3">
-          <div className="flex items-center gap-3">
-            <label className="text-sm font-medium shrink-0">Log file</label>
-            <select
-              value={selectedFile}
-              onChange={(e) => setSelectedFile(e.target.value)}
-              className="flex-1 border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5
-                         text-sm bg-white dark:bg-gray-700 focus:outline-none focus:ring-2
-                         focus:ring-blue-500"
-            >
-              {logFiles.length === 0 && <option value="">No log files found</option>}
-              {logFiles.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div>
-              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                From date
-              </label>
-              <input
-                type="date"
-                value={filterDateFrom}
-                onChange={(e) => setFilterDateFrom(e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
-                           text-sm bg-white dark:bg-gray-700"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                To date
-              </label>
-              <input
-                type="date"
-                value={filterDateTo}
-                onChange={(e) => setFilterDateTo(e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
-                           text-sm bg-white dark:bg-gray-700"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                MAC address
-              </label>
+        {/* ── Control panel ── */}
+        <div
+          className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200
+                      dark:border-gray-700 p-4 space-y-4"
+        >
+          {/* Row 1: single-file selector */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase
+                          tracking-wide mb-2">
+              Load a specific day
+            </p>
+            <div className="flex items-center gap-2">
               <select
-                value={filterMac}
-                onChange={(e) => setFilterMac(e.target.value)}
-                className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
-                           text-sm bg-white dark:bg-gray-700"
+                value={selectedFile}
+                onChange={(e) => {
+                  setSelectedFile(e.target.value);
+                  setDateRangeMode(false);
+                  setFilterDateFrom("");
+                  setFilterDateTo("");
+                }}
+                className="flex-1 border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5
+                           text-sm bg-white dark:bg-gray-700 focus:outline-none focus:ring-2
+                           focus:ring-blue-500"
               >
-                <option value="">All</option>
-                {uniqueMacs.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
+                {logFiles.length === 0 && (
+                  <option value="">No log files found</option>
+                )}
+                {logFiles.map((f) => (
+                  <option key={f} value={f}>
+                    {f.replace(".log.enc", "")}
                   </option>
                 ))}
               </select>
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                Cycle name
-              </label>
-              <input
-                type="text"
-                value={filterCycle}
-                onChange={(e) => setFilterCycle(e.target.value)}
-                placeholder="Filter…"
-                className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
-                           text-sm bg-white dark:bg-gray-700"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                Filename
-              </label>
-              <input
-                type="text"
-                value={filterFilename}
-                onChange={(e) => setFilterFilename(e.target.value)}
-                placeholder="Search…"
-                className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
-                           text-sm bg-white dark:bg-gray-700"
-              />
+              <button
+                onClick={() => {
+                  setDateRangeMode(false);
+                  loadSingleFile(selectedFile);
+                }}
+                disabled={!selectedFile || loading}
+                className="px-4 py-1.5 rounded bg-blue-600 text-white text-sm font-medium
+                           hover:bg-blue-700 disabled:opacity-40 transition shrink-0"
+              >
+                Load
+              </button>
             </div>
           </div>
 
-          <p className="text-xs text-gray-400 dark:text-gray-500">
-            Showing {filtered.length} of {entries.length} entries
-          </p>
+          {/* Divider */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 border-t border-gray-200 dark:border-gray-700" />
+            <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
+              or search across days
+            </span>
+            <div className="flex-1 border-t border-gray-200 dark:border-gray-700" />
+          </div>
+
+          {/* Row 2: date-range loader */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase
+                          tracking-wide mb-2">
+              Load by date range
+            </p>
+            <div className="flex items-end gap-2 flex-wrap">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  From
+                </label>
+                <input
+                  type="date"
+                  value={filterDateFrom}
+                  onChange={(e) => setFilterDateFrom(e.target.value)}
+                  className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5
+                             text-sm bg-white dark:bg-gray-700 focus:outline-none
+                             focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  To
+                </label>
+                <input
+                  type="date"
+                  value={filterDateTo}
+                  onChange={(e) => setFilterDateTo(e.target.value)}
+                  className="border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5
+                             text-sm bg-white dark:bg-gray-700 focus:outline-none
+                             focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <button
+                onClick={loadDateRange}
+                disabled={(!filterDateFrom && !filterDateTo) || loading}
+                className="px-4 py-1.5 rounded bg-blue-600 text-white text-sm font-medium
+                           hover:bg-blue-700 disabled:opacity-40 transition"
+              >
+                🔍 Search
+              </button>
+              {dateRangeMode && (
+                <button
+                  onClick={resetToSingleFile}
+                  className="px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600
+                             text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100
+                             dark:hover:bg-gray-700 transition"
+                >
+                  ✕ Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Row 3: in-memory filters */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase
+                          tracking-wide mb-2">
+              Filter loaded entries
+            </p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  MAC address
+                </label>
+                <select
+                  value={filterMac}
+                  onChange={(e) => setFilterMac(e.target.value)}
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
+                             text-sm bg-white dark:bg-gray-700"
+                >
+                  <option value="">All</option>
+                  {uniqueMacs.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  Cycle name
+                </label>
+                <input
+                  type="text"
+                  value={filterCycle}
+                  onChange={(e) => setFilterCycle(e.target.value)}
+                  placeholder="Filter…"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
+                             text-sm bg-white dark:bg-gray-700"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  Filename
+                </label>
+                <input
+                  type="text"
+                  value={filterFilename}
+                  onChange={(e) => setFilterFilename(e.target.value)}
+                  placeholder="Search…"
+                  className="w-full border border-gray-300 dark:border-gray-600 rounded px-2 py-1
+                             text-sm bg-white dark:bg-gray-700"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Status bar */}
+          <div className="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
+            <span>
+              {dateRangeMode
+                ? `Loaded ${loadedFrom.length} file(s): ${loadedFrom.map((f) => f.replace(".log.enc", "")).join(", ")}`
+                : selectedFile
+                ? `Loaded: ${selectedFile.replace(".log.enc", "")}`
+                : "No file loaded"}
+            </span>
+            <span>
+              Showing {filtered.length} of {entries.length} entries
+            </span>
+          </div>
         </div>
 
+        {/* Error / loading */}
         {error && (
-          <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200
-                          dark:border-red-700 rounded text-sm text-red-600 dark:text-red-400">
+          <div
+            className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200
+                        dark:border-red-700 rounded text-sm text-red-600 dark:text-red-400"
+          >
             {error}
           </div>
         )}
         {loading && (
-          <p className="text-sm text-gray-500 dark:text-gray-400">Decrypting log file…</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Decrypting log file{loadedFrom.length > 1 ? "s" : ""}…
+          </p>
         )}
 
         {logFiles.length === 0 && !loading && (
@@ -338,8 +506,10 @@ export default function LogViewer() {
                             dark:border-gray-700 overflow-hidden"
               >
                 {/* Entry header */}
-                <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-700
-                                bg-gray-50 dark:bg-gray-700">
+                <div
+                  className="px-5 py-3 border-b border-gray-100 dark:border-gray-700
+                              bg-gray-50 dark:bg-gray-700"
+                >
                   <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">
                     {entry.input_filename}
                   </p>
@@ -362,8 +532,10 @@ export default function LogViewer() {
                     {expandedSettings.has(idx) ? "▼" : "▶"} Settings snapshot
                   </button>
                   {expandedSettings.has(idx) && (
-                    <pre className="mt-2 text-xs bg-gray-50 dark:bg-gray-900 rounded p-3
-                                    overflow-x-auto text-gray-600 dark:text-gray-400 leading-relaxed">
+                    <pre
+                      className="mt-2 text-xs bg-gray-50 dark:bg-gray-900 rounded p-3
+                                  overflow-x-auto text-gray-600 dark:text-gray-400 leading-relaxed"
+                    >
                       {JSON.stringify(entry.settings_snapshot, null, 2)}
                     </pre>
                   )}
@@ -379,15 +551,26 @@ export default function LogViewer() {
                       <table className="w-full text-xs">
                         <thead>
                           <tr className="border-b border-gray-100 dark:border-gray-700">
-                            <th className="py-0.5 text-left font-medium text-gray-400 dark:text-gray-500">Evaluator</th>
-                            <th className="py-0.5 text-right font-medium text-gray-400 dark:text-gray-500">Input %</th>
-                            <th className="py-0.5 text-right font-medium text-gray-400 dark:text-gray-500">Booklets</th>
-                            <th className="py-0.5 text-right font-medium text-gray-400 dark:text-gray-500">Share %</th>
+                            <th className="py-0.5 text-left font-medium text-gray-400 dark:text-gray-500">
+                              Evaluator
+                            </th>
+                            <th className="py-0.5 text-right font-medium text-gray-400 dark:text-gray-500">
+                              Input %
+                            </th>
+                            <th className="py-0.5 text-right font-medium text-gray-400 dark:text-gray-500">
+                              Booklets
+                            </th>
+                            <th className="py-0.5 text-right font-medium text-gray-400 dark:text-gray-500">
+                              Share %
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
                           {c.evaluators.map((ev) => (
-                            <tr key={ev.id} className="border-b border-gray-50 dark:border-gray-700/30">
+                            <tr
+                              key={ev.id}
+                              className="border-b border-gray-50 dark:border-gray-700/30"
+                            >
                               <td className="py-0.5 font-mono text-gray-700 dark:text-gray-300">
                                 {ev.id}
                               </td>

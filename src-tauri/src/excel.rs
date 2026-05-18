@@ -235,7 +235,7 @@ pub fn write_output_files(
         .write_with_format(0, 0, "Test Id", &bold)
         .map_err(|e| e.to_string())?;
     worksheet
-        .write_with_format(0, 1, "Evaluator Id", &bold)
+        .write_with_format(0, 1, "Evaluator Ids", &bold)
         .map_err(|e| e.to_string())?;
     worksheet
         .write_with_format(0, 2, "User Id", &bold)

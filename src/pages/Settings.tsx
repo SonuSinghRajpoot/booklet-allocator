@@ -301,7 +301,7 @@ export default function Settings() {
               ["Ctrl+O", "Open file picker"],
               ["Ctrl+Enter", "Preview allocation"],
               ["Ctrl+,", "Open settings"],
-              ["Ctrl+Shift+L", "Open log viewer (password gated)"],
+              ["Ctrl+Shift+L", "Open audit log viewer"],
             ].map(([key, desc]) => (
               <div key={key} className="flex items-center gap-3 text-sm">
                 <kbd

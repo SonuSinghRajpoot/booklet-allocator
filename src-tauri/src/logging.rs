@@ -187,32 +187,6 @@ pub fn list_log_files(logs_dir: &PathBuf) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
-// ---------------------------------------------------------------------------
-// Password verification (hash compiled in from build.rs)
-// ---------------------------------------------------------------------------
-
-include!(concat!(env!("OUT_DIR"), "/log_password_hash.rs"));
-
-pub fn verify_log_password(candidate: &str) -> Result<bool, String> {
-    use argon2::{
-        password_hash::{PasswordHash, PasswordVerifier},
-        Argon2,
-    };
-
-    match LOG_PASSWORD_HASH {
-        None => Err(
-            "Log viewer is not configured. Set ALLOCATOR_LOG_PASSWORD at build time.".to_string(),
-        ),
-        Some(hash_str) => {
-            let parsed = PasswordHash::new(hash_str)
-                .map_err(|e| format!("Stored hash is invalid: {}", e))?;
-            Ok(Argon2::default()
-                .verify_password(candidate.as_bytes(), &parsed)
-                .is_ok())
-        }
-    }
-}
-
 /// Get MAC address as a string.
 pub fn get_mac_address() -> String {
     mac_address::get_mac_address()
